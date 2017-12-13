@@ -289,7 +289,7 @@ class BootstrappedTest(unittest.TestCase):
 
         bsr_percent = bs.bootstrap_ab(test, ctrl, bs_stats.mean,
                                       bs_compare.percent_change,
-                                      is_pivotal=False)
+                                      method="bca")
         self.assertAlmostEqual(
             bsr.value,
             bsr_percent.value,

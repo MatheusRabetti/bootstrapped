@@ -13,6 +13,7 @@ from __future__ import unicode_literals
 import numpy as _np
 import multiprocessing as _multiprocessing
 import scipy.sparse as _sparse
+from scipy.stats import norm
 
 class BootstrapResults(object):
     def __init__(self, lower_bound, value, upper_bound):
@@ -75,7 +76,7 @@ class BootstrapResults(object):
         return int(self.is_significant()) * _np.sign(self.value)
 
 
-def _get_confidence_interval(bootstrap_dist, stat_val, alpha, is_pivotal):
+def _get_confidence_interval(bootstrap_dist, stat_val, alpha, method):
     '''Get the bootstrap confidence interval for a given distribution.
     Args:
         bootstrap_distribution: numpy array of bootstrap results from
@@ -86,15 +87,30 @@ def _get_confidence_interval(bootstrap_dist, stat_val, alpha, is_pivotal):
         is_pivotal: if true, use the pivotal method. if false, use the
             percentile method.
     '''
-    if is_pivotal:
+    if method == "pivotal":
         low = 2 * stat_val - _np.percentile(bootstrap_dist, 100 * (1 - alpha / 2.))
         val = stat_val
         high = 2 * stat_val - _np.percentile(bootstrap_dist, 100 * (alpha / 2.))
-    else:
+    elif method == "bca":
+        
+        z0 = norm.ppf( ( 1.0*_np.sum(bootstrap_dist < stat_val, axis=0)  ) / len(bootstrap_dist) )
+        alphas = _np.array([alpha/2, 1-alpha/2])
+
+        alpha1 = norm.cdf(z0+(z0+norm.ppf(alphas[0]))/(1-acc_value*(z0+norm.ppf(alphas[0]))))
+        alpha2 = norm.cdf(z0+(z0+norm.ppf(alphas[1]))/(1-acc_value*(z0+norm.ppf(alphas[1]))))
+        
+        low = _np.percentile(bootstrap_dist, 100 * (alpha1))
+        val = stat_val
+        high = _np.percentile(bootstrap_dist, 100 * (alpha2))
+
+
+    elif method == "pi": 
         low = _np.percentile(bootstrap_dist, 100 * (alpha / 2.))
         val = _np.percentile(bootstrap_dist, 50)
         high = _np.percentile(bootstrap_dist, 100 * (1 - alpha / 2.))
-
+    else:
+        ValueError("Method {0} is not supported.".format(method))
+    
     return BootstrapResults(low, val, high)
 
 
@@ -283,7 +299,7 @@ def _bootstrap_distribution(values_lists, stat_func_lists,
 
 
 def bootstrap(values, stat_func, denominator_values=None, alpha=0.05,
-              num_iterations=10000, iteration_batch_size=None, is_pivotal=True,
+              num_iterations=10000, iteration_batch_size=None, method="bca",
               num_threads=1, return_distribution=False):
     '''Returns bootstrap estimate.
     Args:
@@ -342,6 +358,23 @@ def bootstrap(values, stat_func, denominator_values=None, alpha=0.05,
 
         stat_val = stat_func(values)[0] / stat_func(denominator_values)[0]
 
+    if method == 'bca':
+        # Statistics of the jackknife distribution
+        kwargs = {}
+        
+        data = _np.asarray(values)
+        n_samples = data.size
+        ind0 = _np.arange(n_samples)[_np.newaxis, :]
+        ind = _np.arange(n_samples, dtype=int)
+        ind = _np.vstack([_np.hstack((ind[:i], ind[i + 1:])) for i in ind])
+
+        jstat = stat_func(data[ind], **kwargs)
+        jmean = _np.mean(jstat,axis=0)
+        # Acceleration value
+        acc_value = _np.sum((jmean - jstat)**3, axis=0) / (6.0 * _np.sum((jmean - jstat)**2, axis=0)**1.5)
+        global acc_value
+
+
     distribution_results = _bootstrap_distribution(values_lists,
                                                    stat_func_lists,
                                                    num_iterations,
@@ -354,13 +387,13 @@ def bootstrap(values, stat_func, denominator_values=None, alpha=0.05,
         return bootstrap_dist
     else:
         return _get_confidence_interval(bootstrap_dist, stat_val, alpha,
-                                        is_pivotal)
+                                        method)
 
 
 def bootstrap_ab(test, ctrl, stat_func, compare_func, test_denominator=None,
                  ctrl_denominator=None, alpha=0.05, num_iterations=10000,
                  iteration_batch_size=None, scale_test_by=1.0,
-                 is_pivotal=True, num_threads=1, return_distribution=False):
+                 method="bca", num_threads=1, return_distribution=False):
     '''Returns bootstrap confidence intervals for an A/B test.
     Args:
         test: numpy array (or scipy.sparse.csr_matrix) of test results
@@ -438,6 +471,40 @@ def bootstrap_ab(test, ctrl, stat_func, compare_func, test_denominator=None,
     else:
         raise ValueError('Both test and ctrl denominators must be specified.')
 
+    if method == 'bca':
+        # Statistics of the jackknife distribution
+        
+        values = _np.concatenate((ctrl, test), axis=0)
+        begin_ctrl = 0
+        end_ctrl = len(ctrl)-1
+        begin_test= len(ctrl)
+        end_test = len(values)-1
+        
+        ctrl_stat = []
+        test_stat = []
+        for i in range(len(values)):
+            
+            if i >= begin_ctrl and i <= end_ctrl:
+                ctrl_t = _np.delete(values[begin_ctrl:end_ctrl+1], i)
+                test_t = values[begin_test:end_test+1]
+            elif i >= begin_test and i <= end_test:
+                ctrl_t = values[begin_ctrl:end_ctrl+1]
+                test_t = _np.delete(values[begin_test:end_test+1], i-begin_test)
+            
+            ctrl_stat.append(stat_func(ctrl_t)[0])
+            test_stat.append(stat_func(test_t)[0])
+        
+        ctrl_stat = _np.asarray(ctrl_stat)
+        test_stat = _np.asarray(test_stat)
+
+        jstat = compare_func(ctrl_stat, test_stat)
+        #jstat = stat_func(values[ind], **kwargs)
+        
+        jmean = _np.mean(jstat,axis=0)
+        # Acceleration value
+        acc_value = _np.sum((jmean - jstat)**3, axis=0) / (6.0 * _np.sum((jmean - jstat)**2, axis=0)**1.5)
+        global acc_value
+
     test_results = _bootstrap_distribution(test_lists, stat_func_lists,
                                            num_iterations, iteration_batch_size,
                                            num_threads)
@@ -457,4 +524,4 @@ def bootstrap_ab(test, ctrl, stat_func, compare_func, test_denominator=None,
 
         test_ctrl_val = compare_func(test_val * scale_test_by, ctrl_val)
         return _get_confidence_interval(test_ctrl_dist, test_ctrl_val, alpha,
-                                        is_pivotal)
+                                        method)

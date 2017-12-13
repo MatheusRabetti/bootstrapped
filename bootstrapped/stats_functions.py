@@ -10,8 +10,8 @@ from __future__ import division
 from __future__ import print_function
 from __future__ import unicode_literals
 import numpy as _np
+import scipy.stats as _st
 import scipy.sparse as _sparse
-
 
 def mean(values, axis=1):
     '''Returns the mean of each row of a matrix'''
@@ -29,7 +29,6 @@ def sum(values, axis=1):
     else:
         return _np.sum(_np.asmatrix(values), axis=axis).A1
 
-
 def median(values, axis=1):
     '''Returns the sum of each row of a matrix'''
     if isinstance(values, _sparse.csr_matrix):
@@ -37,6 +36,14 @@ def median(values, axis=1):
         return ret.A1
     else:
         return _np.median(_np.asmatrix(values), axis=axis).A1
+
+def trimmed_mean(values, axis=1):
+    '''Returns the trimmed mean of each row of a matrix'''
+    if isinstance(values, _sparse.csr_matrix):
+        ret = _st.trim_mean(values, proportiontocut=.25, axis=axis)
+        return ret
+    else:
+        return _st.trim_mean(_np.asmatrix(values), proportiontocut=.25, axis=axis)
 
 def std(values, axis=1):
     '''Returns the std of each row of a matrix'''
